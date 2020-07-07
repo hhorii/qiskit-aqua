@@ -17,6 +17,7 @@
 from typing import Optional, Dict, List, Union, cast, Any
 import logging
 from functools import partial
+from time import time
 
 from qiskit.providers import BaseBackend
 from qiskit.circuit import ParameterExpression, ParameterVector
@@ -52,7 +53,8 @@ class CircuitSampler(ConverterBase):
                  backend: Union[BaseBackend, QuantumInstance] = None,
                  statevector: Optional[bool] = None,
                  param_qobj: bool = False,
-                 attach_results: bool = False) -> None:
+                 attach_results: bool = False,
+                 skip_transpile: bool = False) -> None:
         """
         Args:
             backend: The quantum backend or QuantumInstance to use to sample the circuits.
@@ -74,6 +76,7 @@ class CircuitSampler(ConverterBase):
             else self.quantum_instance.is_statevector
         self._param_qobj = param_qobj
         self._attach_results = attach_results
+        self._skip_transpile = skip_transpile
 
         self._check_quantum_instance_and_modes_consistent()
 
@@ -250,17 +253,23 @@ class CircuitSampler(ConverterBase):
             else:
                 circuits = [op_c.to_circuit(meas=True) for op_c in circuit_sfns]
 
-            try:
-                self._transpiled_circ_cache = self.quantum_instance.transpile(circuits)
-            except QiskitError:
-                logger.debug(r'CircuitSampler failed to transpile circuits with unbound '
-                             r'parameters. Attempting to transpile only when circuits are bound '
-                             r'now, but this can hurt performance due to repeated transpilation.')
-                self._transpile_before_bind = False
+            if self._skip_transpile:
                 self._transpiled_circ_cache = circuits
+            else:
+                try:
+                    self._transpiled_circ_cache = self.quantum_instance.transpile(circuits) if not self._skip_transpile else\
+                        circuits
+                except QiskitError:
+                    logger.debug(r'CircuitSampler failed to transpile circuits with unbound '
+                                 r'parameters. Attempting to transpile only when circuits are bound '
+                                 r'now, but this can hurt performance due to repeated transpilation.')
+                    self._transpile_before_bind = False
+                    self._transpiled_circ_cache = circuits
+                
         else:
             circuit_sfns = list(self._circuit_ops_cache.values())
 
+        start_time = time()
         if param_bindings is not None:
             if self._param_qobj:
                 ready_circs = self._transpiled_circ_cache
@@ -271,7 +280,11 @@ class CircuitSampler(ConverterBase):
                                for binding in param_bindings]
         else:
             ready_circs = self._transpiled_circ_cache
+        end_time = time()
+        logger.info('Parameter binding %.5f (ms)', (end_time - start_time) * 1000)
 
+        start_time = time()
+        
         results = self.quantum_instance.execute(ready_circs,
                                                 had_transpiled=self._transpile_before_bind)
 
@@ -309,6 +322,10 @@ class CircuitSampler(ConverterBase):
                     result_sfn.execution_results = circ_results
                 c_statefns.append(result_sfn)
             sampled_statefn_dicts[id(op_c)] = c_statefns
+            
+        end_time = time()
+        logger.info('Circuit execution %.5f (ms)', (end_time - start_time) * 1000)
+        
         return sampled_statefn_dicts
 
     # TODO build Aer re-parameterized Qobj.

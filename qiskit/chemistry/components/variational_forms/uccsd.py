@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from genericpath import exists
 
 # This code is part of Qiskit.
 #
@@ -30,8 +31,9 @@ from qiskit.aqua.utils.validation import validate_min, validate_in_set
 from qiskit import QuantumRegister, QuantumCircuit
 from qiskit.tools import parallel_map
 from qiskit.tools.events import TextProgressBar
+from qiskit.providers import BaseBackend
 
-from qiskit.aqua import aqua_globals
+from qiskit.aqua import aqua_globals, QuantumInstance
 from qiskit.aqua.components.initial_states import InitialState
 from qiskit.aqua.operators import WeightedPauliOperator, Z2Symmetries
 from qiskit.aqua.components.variational_forms import VariationalForm
@@ -64,7 +66,8 @@ class UCCSD(VariationalForm):
                  method_doubles: str = 'ucc',
                  excitation_type: str = 'sd',
                  same_spin_doubles: bool = True,
-                 skip_commute_test: bool = False) -> None:
+                 skip_commute_test: bool = False,
+                 transpile: bool = False) -> None:
         """Constructor.
 
         Args:
@@ -208,7 +211,9 @@ class UCCSD(VariationalForm):
             self._hopping_ops[len(self._single_excitations):] = self._hopping_ops_doubles_temp
 
         self._logging_construct_circuit = True
-
+        
+        self._transpile = transpile
+    
     @property
     def single_excitations(self):
         """
@@ -413,22 +418,30 @@ class UCCSD(VariationalForm):
         #        for (qubit_op, param) in list_excitation_operators]
         # circuit += reduce(lambda x, y: x @ y, reversed(ops)).to_circuit()
         # return circuit
-
+        
+        logger.info("Constructing {0} excited operators with {1} processes".format(
+            len(list_excitation_operators), aqua_globals.num_processes))
         results = parallel_map(UCCSD._construct_circuit_for_one_excited_operator,
                                list_excitation_operators,
-                               task_args=(q, self._num_time_slices),
+                               task_args=(q, self._num_time_slices, self._transpile),
                                num_processes=aqua_globals.num_processes)
 
-        for qc in results:
-            if self._shallow_circuit_concat:
-                circuit.data += qc.data
-            else:
+        logger.info("Combining {0} excited operators".format(len(list_excitation_operators)))
+        if self._shallow_circuit_concat:
+            for qc in results:
+                for _, qbits, _ in qc._data:
+                    for qbit in qbits:
+                        qbit._register = q
+            for qc in results:
+                circuit._data += qc._data
+        else:
+            for qc in results:
                 circuit += qc
 
         return circuit
 
     @staticmethod
-    def _construct_circuit_for_one_excited_operator(qubit_op_and_param, qr, num_time_slices):
+    def _construct_circuit_for_one_excited_operator(qubit_op_and_param, qr, num_time_slices, transpile):
         qubit_op, param = qubit_op_and_param
         # TODO: need to put -1j in the coeff of pauli since the Parameter.
         # does not support complex number, but it can be removed if Parameter supports complex
@@ -436,6 +449,11 @@ class UCCSD(VariationalForm):
         qc = qubit_op.evolve(state_in=None, evo_time=param,
                              num_time_slices=num_time_slices,
                              quantum_registers=qr)
+        
+        if transpile == True:
+            from qiskit import transpile
+            qc = transpile(qc.decompose())
+
         return qc
 
     @property

@@ -97,7 +97,8 @@ class VQE(VQAlgorithm, MinimumEigensolver):
                  aux_operators: Optional[List[Optional[Union[OperatorBase,
                                                              LegacyBaseOperator]]]] = None,
                  callback: Optional[Callable[[int, np.ndarray, float, float], None]] = None,
-                 quantum_instance: Optional[Union[QuantumInstance, BaseBackend]] = None) -> None:
+                 quantum_instance: Optional[Union[QuantumInstance, BaseBackend]] = None,
+                 skip_transpile: bool = False) -> None:
         """
 
         Args:
@@ -169,6 +170,8 @@ class VQE(VQAlgorithm, MinimumEigensolver):
         self.aux_operators = aux_operators
 
         self._eval_count = 0
+        self._skip_transpile = skip_transpile
+        
         logger.info(self.print_settings())
 
     @property
@@ -199,7 +202,7 @@ class VQE(VQAlgorithm, MinimumEigensolver):
         super(VQE, self.__class__).quantum_instance.__set__(self, quantum_instance)
 
         if self._circuit_sampler is None:
-            self._circuit_sampler = CircuitSampler(self._quantum_instance)
+            self._circuit_sampler = CircuitSampler(self._quantum_instance, skip_transpile=self._skip_transpile)
         else:
             self._circuit_sampler.quantum_instance = self._quantum_instance
 
@@ -319,6 +322,8 @@ class VQE(VQAlgorithm, MinimumEigensolver):
         if self.operator is None:
             raise AquaError("The operator was never provided.")
 
+        start_time = time()
+
         # ensure operator and varform are compatible
         self._check_operator_varform()
 
@@ -334,7 +339,12 @@ class VQE(VQAlgorithm, MinimumEigensolver):
 
         observable_meas = self.expectation.convert(StateFn(self.operator, is_measurement=True))
         ansatz_circuit_op = CircuitStateFn(wave_function)
-        return observable_meas.compose(ansatz_circuit_op).reduce()
+        ret = observable_meas.compose(ansatz_circuit_op).reduce()
+        
+        end_time = time()
+        logger.info('Circuit construction %.5f (ms)', (end_time - start_time) * 1000)
+        
+        return ret
 
     def supports_aux_operators(self) -> bool:
         return True

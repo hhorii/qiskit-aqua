@@ -230,8 +230,14 @@ class QuantumInstance:
             list[QuantumCircuit]: the transpiled circuits, it is always a list even though
                                   the length is one.
         """
-        transpiled_circuits = compiler.transpile(circuits, self._backend, **self._backend_config,
-                                                 **self._compile_config)
+        if 'optimization_level' in self._compile_config and \
+                self._compile_config['optimization_level'] is not None and \
+                self._compile_config['optimization_level'] < 0:
+            transpiled_circuits = circuits
+            logger.info("skipped transpilation")
+        else:
+            transpiled_circuits = compiler.transpile(circuits, self._backend, **self._backend_config,
+                                                     **self._compile_config)
         if not isinstance(transpiled_circuits, list):
             transpiled_circuits = [transpiled_circuits]
 

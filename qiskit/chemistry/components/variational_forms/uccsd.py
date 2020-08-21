@@ -26,6 +26,7 @@ import collections
 import copy
 
 import numpy as np
+from qiskit.compile import transpile
 from qiskit.aqua.utils.validation import validate_min, validate_in_set
 from qiskit import QuantumRegister, QuantumCircuit
 from qiskit.tools import parallel_map
@@ -64,7 +65,8 @@ class UCCSD(VariationalForm):
                  method_doubles: str = 'ucc',
                  excitation_type: str = 'sd',
                  same_spin_doubles: bool = True,
-                 skip_commute_test: bool = False) -> None:
+                 skip_commute_test: bool = False,
+                 parallel_decomposition: bool = False) -> None:
         """Constructor.
 
         Args:
@@ -208,6 +210,7 @@ class UCCSD(VariationalForm):
             self._hopping_ops[len(self._single_excitations):] = self._hopping_ops_doubles_temp
 
         self._logging_construct_circuit = True
+        self._parallel_decomposition = parallel_decomposition
 
     @property
     def single_excitations(self):
@@ -416,7 +419,7 @@ class UCCSD(VariationalForm):
 
         results = parallel_map(UCCSD._construct_circuit_for_one_excited_operator,
                                list_excitation_operators,
-                               task_args=(q, self._num_time_slices),
+                               task_args=(q, self._num_time_slices, self._parallel_decomposition),
                                num_processes=aqua_globals.num_processes)
 
         if self._shallow_circuit_concat:
@@ -433,7 +436,7 @@ class UCCSD(VariationalForm):
         return circuit
 
     @staticmethod
-    def _construct_circuit_for_one_excited_operator(qubit_op_and_param, qr, num_time_slices):
+    def _construct_circuit_for_one_excited_operator(qubit_op_and_param, qr, num_time_slices, parallel_decomposition):
         qubit_op, param = qubit_op_and_param
         # TODO: need to put -1j in the coeff of pauli since the Parameter.
         # does not support complex number, but it can be removed if Parameter supports complex
@@ -441,6 +444,8 @@ class UCCSD(VariationalForm):
         qc = qubit_op.evolve(state_in=None, evo_time=param,
                              num_time_slices=num_time_slices,
                              quantum_registers=qr)
+        if parallel_decomposition:
+            qc = transpile(qc)
         return qc
 
     @property

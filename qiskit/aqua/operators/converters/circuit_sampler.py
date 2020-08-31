@@ -21,8 +21,9 @@ from time import time
 
 from qiskit.providers import BaseBackend
 from qiskit.circuit import QuantumCircuit, Parameter, ParameterExpression
+from qiskit.tools import parallel_map
 from qiskit import QiskitError
-from qiskit.aqua import QuantumInstance
+from qiskit.aqua import QuantumInstance, aqua_globals
 from qiskit.aqua.utils.backend_utils import is_aer_provider, is_statevector_backend
 from qiskit.aqua.operators.operator_base import OperatorBase
 from qiskit.aqua.operators.operator_globals import Zero
@@ -319,27 +320,29 @@ class CircuitSampler(ConverterBase):
             sampled_statefn_dicts[id(op_c)] = c_statefns
         return sampled_statefn_dicts
 
-    def _generate_aer_params(self,
-                             circuit: QuantumCircuit,
-                             input_params: Dict[Parameter, List[float]]
+    @staticmethod
+    def _generate_aer_param_bindings(input_params: Dict[Parameter, List[float]],
+                             circuits: List[QuantumCircuit]
                              ) -> List[List[Any]]:
-        ret = []
-
-        gate_index = 0
-        for inst, _, _ in circuit.data:
-            param_index = 0
-            for inst_param in inst.params:
-                param_mappings = {}
-                if isinstance(inst_param, ParameterExpression):
-                    for param in inst_param._parameter_symbols.keys():
-                        if param not in input_params:
-                            raise ValueError('unexpected parameter: {0}'.format(param))
-                        param_mappings[param] = input_params[param]
-                    val = float(inst_param.bind(param_mappings))
-                    ret.append([[gate_index, param_index], [val]])
-                param_index += 1
-            gate_index += 1
-        return ret
+        aer_bindings = []
+        for circuit in circuits:
+            aer_binding = []
+            gate_index = 0
+            for inst, _, _ in circuit.data:
+                param_index = 0
+                for inst_param in inst.params:
+                    param_mappings = {}
+                    if isinstance(inst_param, ParameterExpression):
+                        for param in inst_param._parameter_symbols.keys():
+                            if param not in input_params:
+                                raise ValueError('unexpected parameter: {0}'.format(param))
+                            param_mappings[param] = input_params[param]
+                        val = float(inst_param.bind(param_mappings))
+                        aer_binding.append([[gate_index, param_index], [val]])
+                    param_index += 1
+                gate_index += 1
+            aer_bindings.append(aer_binding) 
+        return aer_bindings
 
     def _prepare_parameterized_run_config(self, param_bindings:
                                           List[Dict[Parameter, List[float]]]) -> List[Any]:
@@ -354,10 +357,20 @@ class CircuitSampler(ConverterBase):
             self._transpiled_circ_templates = [circ.assign_parameters(param_bindings[0])
                                                for circ in self._transpiled_circ_cache]
 
-        for param_binding in param_bindings:
-            for circ in self._transpiled_circ_cache:
-                self.quantum_instance._run_config.parameterizations.append(
-                    self._generate_aer_params(circ, param_binding))
+        aer_bindings_list = []
+        if len(param_bindings) == 1 or len(param_bindings) * len(param_bindings[0]) < 1000:
+            for param_binding in param_bindings:
+                aer_bindings_list.append(CircuitSampler._generate_aer_param_bindings(
+                                    param_binding, circuits=self._transpiled_circ_cache))
+        else:
+            aer_bindings_list = parallel_map(CircuitSampler._generate_aer_param_bindings,
+                                             param_bindings,
+                                             task_kwargs={'circuits':self._transpiled_circ_cache},
+                                             num_processes=aqua_globals.num_processes)
+
+        for aer_bindings in aer_bindings_list:
+            for aer_binding in aer_bindings:
+                self.quantum_instance._run_config.parameterizations.append(aer_binding)
 
         return self._transpiled_circ_templates
 

@@ -321,7 +321,8 @@ class CircuitSampler(ConverterBase):
 
     def _generate_aer_params(self,
                              circuit: QuantumCircuit,
-                             input_params: Dict[Parameter, List[float]]
+                             input_params: Dict[Parameter, List[float]],
+                             last_input_params: Dict[Parameter, List[float]]
                              ) -> List[List[Any]]:
         ret = []
 
@@ -330,11 +331,19 @@ class CircuitSampler(ConverterBase):
             param_index = 0
             for inst_param in inst.params:
                 param_mappings = {}
-                if isinstance(inst_param, ParameterExpression):
-                    for param in inst_param._parameter_symbols.keys():
-                        if param not in input_params:
-                            raise ValueError('unexpected parameter: {0}'.format(param))
-                        param_mappings[param] = input_params[param]
+                if isinstance(inst_param, ParameterExpression) == False:
+                    param_index += 1
+                    continue
+                changed = False
+                for param in inst_param._parameter_symbols.keys():
+                    if param not in input_params:
+                        raise ValueError('unexpected parameter: {0}'.format(param))
+                    input_param_value = input_params[param]
+                    param_mappings[param] = input_param_value
+                    if last_input_params is None \
+                            or last_input_params[param] != input_param_value:
+                        changed = True
+                if changed:
                     val = float(inst_param.bind(param_mappings))
                     ret.append([[gate_index, param_index], [val]])
                 param_index += 1
@@ -345,6 +354,7 @@ class CircuitSampler(ConverterBase):
                                           List[Dict[Parameter, List[float]]]) -> List[Any]:
 
         self.quantum_instance._run_config.parameterizations = []
+        self.quantum_instance._run_config.parameterizations_diff_bindings = True
 
         if self._transpiled_circ_templates is None \
                 or len(self._transpiled_circ_templates) != len(self._transpiled_circ_cache):
@@ -354,12 +364,15 @@ class CircuitSampler(ConverterBase):
             self._transpiled_circ_templates = [circ.assign_parameters(param_bindings[0])
                                                for circ in self._transpiled_circ_cache]
 
+        last_param_binding = None
         for param_binding in param_bindings:
             for circ in self._transpiled_circ_cache:
                 self.quantum_instance._run_config.parameterizations.append(
-                    self._generate_aer_params(circ, param_binding))
+                    self._generate_aer_params(circ, param_binding, last_param_binding))
+            last_param_binding = param_binding
 
         return self._transpiled_circ_templates
 
     def _clean_parameterized_run_config(self) -> None:
         self.quantum_instance._run_config.parameterizations = []
+        self.quantum_instance._run_config.parameterizations_diff_bindings = False

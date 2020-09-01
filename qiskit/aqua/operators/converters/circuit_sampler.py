@@ -1,4 +1,5 @@
 # -*- coding: utf-8 -*-
+from _ctypes import Union
 
 # This code is part of Qiskit.
 #
@@ -14,7 +15,7 @@
 
 """ CircuitSampler Class """
 
-from typing import Optional, Dict, List, Union, cast, Any
+from typing import Optional, Dict, List, Union, Tuple, cast, Any
 import logging
 from functools import partial
 from time import time
@@ -321,25 +322,74 @@ class CircuitSampler(ConverterBase):
 
     def _generate_aer_params(self,
                              circuit: QuantumCircuit,
+                             circ_index: List[List[Union[Tuple[Parameter,float], ParameterExpression]]],
                              input_params: Dict[Parameter, List[float]]
                              ) -> List[List[Any]]:
         ret = []
 
-        gate_index = 0
+        gate_pos = 0
         for inst, _, _ in circuit.data:
-            param_index = 0
+            if circ_index[gate_pos] is None:
+                gate_pos += 1
+                continue
+            inst_index = circ_index[gate_pos]
+            param_pos = 0
             for inst_param in inst.params:
-                param_mappings = {}
-                if isinstance(inst_param, ParameterExpression):
-                    for param in inst_param._parameter_symbols.keys():
-                        if param not in input_params:
-                            raise ValueError('unexpected parameter: {0}'.format(param))
-                        param_mappings[param] = input_params[param]
-                    val = float(inst_param.bind(param_mappings))
-                    ret.append([[gate_index, param_index], [val]])
-                param_index += 1
-            gate_index += 1
+                if inst_index is not None and inst_index[param_pos] is not None:
+                    param_index = inst_index[param_pos]
+                    param = param_index[0]
+                    if param not in input_params:
+                        raise ValueError('unexpected parameter: {0}'.format(param))
+                    val = param_index[1] * input_params[param]
+                    ret.append([[gate_pos, param_pos], [val]])
+                else:
+                    param_mappings = {}
+                    if isinstance(inst_param, ParameterExpression):
+                        for param in inst_param._parameter_symbols.keys():
+                            if param not in input_params:
+                                raise ValueError('unexpected parameter: {0}'.format(param))
+                            param_mappings[param] = input_params[param]
+                        val = float(inst_param.bind(param_mappings))
+                        ret.append([[gate_pos, param_pos], [val]])
+                param_pos += 1
+            gate_pos += 1
         return ret
+
+    def _generate_circuit_param_index(self,
+                                      circuit: QuantumCircuit
+                                      ) -> List[Union[List[Union[Tuple[Parameter, float], None]], None]]:
+        circ_index = []
+        for inst, _, _ in circuit.data:
+            added_params = False
+            inst_index = []
+            for inst_param in inst.params:
+                added_param = False
+                param_index = None
+                if isinstance(inst_param, ParameterExpression):
+                    params = inst_param._parameter_symbols.keys()
+                    if len(params) == 1:
+                        val = 1.
+                        param = list(params)[0]
+                        str_param = str(param)
+                        str_inst_param = str(inst_param)
+                        if str_inst_param != str_param \
+                                and str_inst_param[len(str_inst_param) - len(str_param) - 1] == '*':
+                            try:
+                                val = float(len(str_inst_param[0:len(str_inst_param) - len(str_param) - 1]))
+                                param_index = (param, val)
+                                added_param = True
+                            except ValueError:
+                                added_param = False
+                if added_param:
+                    inst_index.append(param_index)
+                    added_params = True
+                else:
+                    inst_index.append(None)
+            if added_params:
+                circ_index.append(inst_index)
+            else:
+                circ_index.append(None)
+        return circ_index
 
     def _prepare_parameterized_run_config(self, param_bindings:
                                           List[Dict[Parameter, List[float]]]) -> List[Any]:
@@ -353,11 +403,14 @@ class CircuitSampler(ConverterBase):
             # They will be overridden in Aer from the next iterations
             self._transpiled_circ_templates = [circ.assign_parameters(param_bindings[0])
                                                for circ in self._transpiled_circ_cache]
+            self._transpiled_circ_templates_indexes = [self._generate_circuit_param_index(circ)
+                                                       for circ in self._transpiled_circ_cache]
 
         for param_binding in param_bindings:
-            for circ in self._transpiled_circ_cache:
+            for circ, circ_index in zip(self._transpiled_circ_cache,\
+                                        self._transpiled_circ_templates_indexes):
                 self.quantum_instance._run_config.parameterizations.append(
-                    self._generate_aer_params(circ, param_binding))
+                    self._generate_aer_params(circ, circ_index, param_binding))
 
         return self._transpiled_circ_templates
 

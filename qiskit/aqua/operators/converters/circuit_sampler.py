@@ -335,7 +335,7 @@ class CircuitSampler(ConverterBase):
                         if param not in input_params:
                             raise ValueError('unexpected parameter: {0}'.format(param))
                         param_mappings[param] = input_params[param]
-                    val = float(inst_param.bind(param_mappings))
+                    val = inst_param.resolve(param_mappings)
                     ret.append([[gate_index, param_index], [val]])
                 param_index += 1
             gate_index += 1
